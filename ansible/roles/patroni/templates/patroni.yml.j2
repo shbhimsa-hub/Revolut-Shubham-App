@@ -1,0 +1,73 @@
+scope: postgres
+namespace: /service/
+name: {{ inventory_hostname }}
+
+restapi:
+  listen: 0.0.0.0:8008
+  connect_address: {{ hostvars[inventory_hostname]['private_ip'] }}:8008
+
+etcd3:
+  hosts:
+{% for host in groups['pg_nodes'] %}
+    - {{ hostvars[host]['private_ip'] }}:2379
+{% endfor %}
+
+{% if inventory_hostname == groups['pg_nodes'][0] %}
+bootstrap:
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    maximum_lag_on_failover: 1048576
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        wal_level: replica
+        hot_standby: "on"
+        wal_keep_size: 64
+        max_wal_senders: 10
+        max_replication_slots: 10
+        archive_mode: "on"
+        archive_timeout: 1800s
+        archive_command: 'cd .'
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+  users:
+    postgres:
+      password: postgres
+      options:
+        - superuser
+        - createdb
+{% endif %}
+
+postgresql:
+  listen: {{ hostvars[inventory_hostname]['private_ip'] }}:5432
+  connect_address: {{ hostvars[inventory_hostname]['private_ip'] }}:5432
+  data_dir: /var/lib/postgresql/14/main
+  bin_dir: /usr/lib/postgresql/14/bin
+  config_dir: /etc/postgresql/14/main
+  parameters:
+    unix_socket_directories: '/var/run/postgresql'
+  authentication:
+    replication:
+      username: replicator
+      password: replicatorpass
+    superuser:
+      username: postgres
+      password: postgres
+  pg_hba:
+    - host replication replicator 10.0.0.0/16 md5
+    - host replication replicator 10.1.0.0/16 md5
+    - host all all 0.0.0.0/0 md5
+    - local all all trust
+  pgpass: /tmp/pgpass0
+  create_replica_methods:
+    - basebackup
+  basebackup:
+    max-rate: 100M
+    checkpoint: fast
+
+watchdog:
+  mode: automatic

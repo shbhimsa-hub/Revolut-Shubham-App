@@ -1,0 +1,49 @@
+- name: Add PostgreSQL GPG key
+  apt_key:
+    url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+    state: present
+
+- name: Add PostgreSQL APT repository
+  apt_repository:
+    repo: "deb http://apt.postgresql.org/pub/repos/apt {{ ansible_distribution_release }}-pgdg main"
+    state: present
+    filename: "pgdg"
+
+- name: Install PostgreSQL
+  apt:
+    name: postgresql-14
+    state: present
+    update_cache: yes
+
+- name: Disable PostgreSQL service (Patroni will manage it)
+  systemd:
+    name: postgresql
+    enabled: false
+    state: stopped
+
+- name: Ensure PostgreSQL data directory is clean
+  file:
+    path: /var/lib/postgresql/14/main
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0700"
+
+- name: Ensure unix_socket_directories exists
+  file:
+    path: /var/run/postgresql
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0755"
+
+- name: Allow replication and local connections in pg_hba.conf
+  blockinfile:
+    path: /etc/postgresql/14/main/pg_hba.conf
+    block: |
+      host replication replicator 10.0.1.0/24 trust
+      host replication replicator 10.1.0.0/24 trust      
+      host all all 0.0.0.0/0 trust
+      local all all trust
+  notify: Restart PostgreSQL
+

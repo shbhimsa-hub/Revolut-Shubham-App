@@ -1,0 +1,3 @@
+replication_user_enabled: true
+replication_user_name: replicator
+replication_user_password: replicatorpass

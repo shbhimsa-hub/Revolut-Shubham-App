@@ -1,0 +1,80 @@
+- name: Download etcd archive with retry
+  block:
+    - name: Download etcd archive
+      get_url:
+        url: "https://github.com/etcd-io/etcd/releases/download/v3.5.12/etcd-v3.5.12-linux-amd64.tar.gz"
+        dest: /tmp/etcd.tar.gz
+        mode: '0644'
+        force: yes
+      register: download_result
+      retries: 5
+      delay: 10
+      until: download_result is succeeded
+
+- name: Extract etcd
+  unarchive:
+    src: "/tmp/etcd.tar.gz"
+    dest: "/usr/local/bin"
+    remote_src: yes
+
+- name: Move etcd binaries
+  copy:
+    remote_src: yes
+    src: "/usr/local/bin/etcd-v3.5.12-linux-amd64/etcd"
+    dest: "/usr/local/bin/etcd"
+    mode: '0755'
+
+- name: Move etcdctl binary
+  copy:
+    remote_src: yes
+    src: "/usr/local/bin/etcd-v3.5.12-linux-amd64/etcdctl"
+    dest: "/usr/local/bin/etcdctl"
+    mode: '0755'
+
+- name: Create etcd user and directory
+  user:
+    name: etcd
+    shell: /sbin/nologin
+
+- name: Create etcd directories
+  file:
+    path: "/etc/etcd"
+    state: directory
+    owner: etcd
+    group: etcd
+    mode: '0755'
+
+#- name: Debug - Show rendered etcd config content
+#  ansible.builtin.debug:
+#    msg: "{{ lookup('ansible.builtin.template', 'etcd.conf.yml.j2') }}"
+#  delegate_to: localhost 
+
+- name: Deploy etcd config file
+  template:
+    src: etcd.conf.yml.j2
+    dest: /etc/etcd/etcd.conf.yml
+    owner: etcd
+    group: etcd
+    mode: '0644'
+
+- name: Ensure etcd data directory exists
+  file:
+    path: /var/lib/etcd
+    state: directory
+    owner: etcd
+    group: etcd
+    mode: '0700'
+
+- name: Deploy etcd systemd service
+  copy:
+    src: etcd.service
+    dest: /etc/systemd/system/etcd.service
+    mode: '0644'
+
+- name: Enable and start etcd
+  systemd:
+    name: etcd
+    enabled: yes
+    daemon_reload: yes
+    state: started
+

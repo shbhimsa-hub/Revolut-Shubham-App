@@ -1,0 +1,142 @@
+- name: Ensure pip is installed
+  apt:
+    name: python3-pip
+    state: present
+  become: yes
+
+- name: Install Patroni with etcd support
+  pip:
+    name: 'patroni[etcd]'
+    executable: pip3
+  become: yes
+
+- name: Install Python dependencies for Patroni
+  apt:
+    name:
+      - python3-pip
+      - python3-venv
+      - build-essential
+      - libpq-dev
+    state: present
+    update_cache: yes
+
+- name: Install psycopg2-binary using pip
+  pip:
+    name: psycopg2-binary
+    executable: pip3
+
+- name: Create Patroni config directory
+  file:
+    path: /etc/patroni
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: '0755'
+  become: yes
+
+- name: Deploy Patroni config
+  template:
+    src: patroni.yml.j2
+    dest: /etc/patroni/postgres.yml
+    owner: postgres
+    group: postgres
+    mode: '0644'
+  become: yes
+
+- name: Deploy Patroni systemd service
+  copy:
+    src: patroni.service
+    dest: /etc/systemd/system/patroni.service
+    mode: '0644'
+  become: yes
+
+- name: Check if this node has already bootstrapped
+  stat:
+    path: /etc/patroni/.bootstrapped
+  register: patroni_bootstrapped
+
+- name: Delete Patroni etcd key (only if first node and not bootstrapped)
+  shell: etcdctl --endpoints=http://127.0.0.1:2379 del --prefix /service/postgres/
+  when:
+    - inventory_hostname == groups['pg_nodes'][0]
+    - patroni_bootstrapped.stat.exists == false
+  become: yes
+
+- name: Clean PostgreSQL data dir (only on bootstrap node)
+  shell: |
+    systemctl stop patroni || true
+    rm -rf /var/lib/postgresql/14/main/*
+    chown -R postgres:postgres /var/lib/postgresql/14/main
+    chmod 0700 /var/lib/postgresql/14/main
+  when:
+    - inventory_hostname == groups['pg_nodes'][0]
+    - patroni_bootstrapped.stat.exists == false
+  become: yes
+
+- name: Clean PostgreSQL data dir on replicas (if not bootstrapped)
+  shell: |
+    systemctl stop patroni || true
+    rm -rf /var/lib/postgresql/14/main/*
+    chown -R postgres:postgres /var/lib/postgresql/14/main
+    chmod 0700 /var/lib/postgresql/14/main
+  when:
+    - inventory_hostname != groups['pg_nodes'][0]
+    - patroni_bootstrapped.stat.exists == false
+  become: yes
+
+- name: Enable and start Patroni
+  systemd:
+    name: patroni
+    enabled: yes
+    daemon_reload: yes
+    state: started
+  become: yes
+
+- name: Mark node as bootstrapped
+  file:
+    path: /etc/patroni/.bootstrapped
+    state: touch
+  when:
+    - inventory_hostname == groups['pg_nodes'][0]
+    - patroni_bootstrapped.stat.exists == false
+  become: yes
+
+- name: Check if this node is the Patroni leader
+  command: patronictl -c /etc/patroni/postgres.yml list
+  register: patroni_list
+  changed_when: false
+  become: true
+
+- name: Ensure postgres user always has password (only if leader and writable)
+  become: true
+  shell: |
+    sudo -u postgres psql -d postgres -c "ALTER USER postgres WITH PASSWORD 'postgres';"
+  args:
+    chdir: /tmp
+  when:
+    - patroni_list.stdout is search(inventory_hostname + '.*Leader.*running')
+
+- name: Install PostgreSQL Python bindings
+  apt:
+    name: python3-psycopg2
+    state: present
+  become: yes
+
+- name: Wait for PostgreSQL to accept connections (on leader only)
+  wait_for:
+    host: "{{ hostvars[inventory_hostname]['private_ip'] }}"
+    port: 5432
+    delay: 5
+    timeout: 60
+  when: inventory_hostname == groups['pg_nodes'][0]
+
+- name: Create replication user via SQL (on leader only)
+  become: true
+  shell: |
+    sudo -u postgres psql -d postgres -tAc "
+    SELECT 'already exists'
+    WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'replicator');" || \
+    sudo -u postgres psql -d postgres -c "CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD 'replicatorpass';"
+  args:
+    chdir: /tmp
+  when: inventory_hostname == groups['pg_nodes'][0]
